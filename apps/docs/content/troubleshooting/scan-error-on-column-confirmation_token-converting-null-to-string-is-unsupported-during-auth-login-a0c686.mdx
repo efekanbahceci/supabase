@@ -1,18 +1,64 @@
 ---
-title = "'Scan error on column confirmation_token: converting NULL to string is unsupported' during Auth login"
+title = "'Scan error on column confirmation_token: converting NULL to string is unsupported' in Auth endpoints"
 topics = [ "auth" ]
-keywords = []
+keywords = [ "confirmation_token", "converting NULL to string is unsupported", "admin/users", "token", "scan error", "500" ]
 database_id = "02a26b95-3029-49a1-9319-161cf1c4c21d"
 
 [[errors]]
 http_status_code = 500
 message = "error finding user: sql: Scan error on column 'confirmation_token': converting NULL to string is unsupported"
+
+[[errors]]
+http_status_code = 500
+message = "unable to fetch records: sql: Scan error on column index 3, name \"confirmation_token\": converting NULL to string is unsupported"
+
+[[errors]]
+http_status_code = 500
+message = "sql: Scan error on column 'confirmation_token': converting NULL to string is unsupported"
 ---
 
-If you encounter an HTTP 500 error during authentication with the message `error finding user: sql: Scan error on column "confirmation_token": converting NULL to string is unsupported`, this typically indicates that the GoTrue Auth service found a `NULL` value in the `auth.users.confirmation_token` column, where a non-nullable string is expected.
+If you encounter an HTTP 500 error when interacting with Supabase Auth endpoints (such as `POST /token`, `GET /admin/users`, or `GET /admin/users/{id}`) with the message `converting NULL to string is unsupported` on `confirmation_token`, this indicates that the GoTrue Auth service found a database `NULL` value in the `auth.users.confirmation_token` column where Go's database driver expects a non-nullable string.
 
-To resolve this, update the `confirmation_token` to an empty string where it is `NULL`. You can execute the following SQL query in the [SQL Editor](/dashboard/project/_/sql/new):
+## Why this happens
+
+GoTrue maps `confirmation_token` to a plain Go `string` in its internal `User` model. When users are created or managed through the standard Supabase Auth API (`auth.signUp()`, invite endpoints, or the Admin API), GoTrue populates token columns with either a generated token or an empty string (`''`), never a SQL `NULL`.
+
+However, the Postgres schema for `auth.users` allows nullable values (`varchar(255) NULL`). When user records are inserted or modified directly using:
+
+- Direct SQL `INSERT` statements in the SQL Editor or migrations
+- Third-party database seed scripts or ORMs (such as Prisma)
+- Custom database triggers or external sync tools
+
+any omitted token columns default to `NULL`. When GoTrue later attempts to scan those rows (`SELECT * FROM auth.users`), Go's `database/sql` driver fails with `sql: Scan error on column ...: converting NULL to string is unsupported` and returns an HTTP 500 error.
+
+## Safe diagnostic check
+
+To verify if your database contains affected user records without modifying any data, run the following query in the [SQL Editor](/dashboard/project/_/sql/new):
 
 ```sql
-update auth.users set confirmation_token = '' where confirmation_token is null;
+select count(*)
+from auth.users
+where confirmation_token is null;
+```
+
+If the count is greater than `0`, one or more user rows contain `NULL` values that trigger the scanning error.
+
+## Resolution
+
+To resolve this issue, update all `NULL` values in `confirmation_token` to an empty string (`''`):
+
+```sql
+update auth.users
+set confirmation_token = ''
+where confirmation_token is null;
+```
+
+### Other token columns
+
+If you encounter a similar scan error referencing another token column (such as `recovery_token`, `email_change_token_new`, `email_change_token_current`, or `reauthentication_token`), apply the same fix by replacing the column name:
+
+```sql
+update auth.users
+set recovery_token = ''
+where recovery_token is null;
 ```
